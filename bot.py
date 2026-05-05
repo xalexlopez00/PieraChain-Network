@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 # --- CONFIGURACIÓN ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-API_BASE_URL = os.getenv("API_URL", "http://0.0.0.0:10000")
+API_BASE_URL = os.getenv("API_URL")
 MONGO_URI = os.getenv("MONGO_URI", "")
 
 # --- FUNCIÓN DE LIMPIEZA DE URI ---
