@@ -6,24 +6,38 @@ import random
 import requests
 import os
 import pymongo
+import urllib.parse
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN CON VARIABLES DE ENTORNO ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 API_BASE_URL = os.getenv("API_URL", "http://0.0.0.0:10000")
 MONGO_URI = os.getenv("MONGO_URI")
+
+# --- LIMPIEZA DE URI (Para evitar error InvalidURI si hay caracteres especiales) ---
+if MONGO_URI and "@" in MONGO_URI:
+    try:
+        prefix, rest = MONGO_URI.split("://", 1)
+        user_pass, host = rest.split("@", 1)
+        if ":" in user_pass:
+            user, password = user_pass.split(":", 1)
+            user = urllib.parse.quote_plus(user)
+            password = urllib.parse.quote_plus(password)
+            MONGO_URI = f"{prefix}://{user}:{password}@{host}"
+    except:
+        pass
 
 # --- CONEXIÓN A MONGODB ---
 try:
     client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     db_mongo = client["pieracoin_db"]
     users_col = db_mongo["users"]
-    client.server_info() # Provoca una excepción si no hay conexión
+    client.server_info()
     print("✅ [DATABASE] Conexión establecida con MongoDB Atlas.")
 except Exception as e:
-    print(f"❌ [DATABASE] Error crítico: {e}")
+    print(f"❌ [DATABASE] Error crítico de conexión: {e}")
 
-# --- FUNCIONES AUXILIARES ---
+# --- FUNCIONES DE BASE DE DATOS ---
 def get_user(user_id):
     return users_col.find_one({"user_id": str(user_id)})
 
@@ -41,7 +55,6 @@ class PieraChainMenu(View):
 
     @discord.ui.button(label="⛏️ INICIAR MINADO", style=ButtonStyle.success, custom_id="mine_btn")
     async def mine_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Embed de carga estética
         embed_mining = Embed(
             title="⚡ CONECTANDO AL NODO...",
             description=(
@@ -54,13 +67,11 @@ class PieraChainMenu(View):
             ),
             color=0xF1C40F
         )
-        embed_mining.set_image(url="https://i.imgur.com/8V9Mwf2.gif") # Opcional: un gif de carga
         await interaction.response.edit_message(embed=embed_mining, view=None)
         
         await asyncio.sleep(random.randint(4, 7)) 
         
-        # Probabilidad de éxito (25%)
-        if random.random() < 0.25:
+        if random.random() < 0.25: # 25% de probabilidad de éxito
             try:
                 r = requests.post(f"{API_BASE_URL}/mine?address={self.address}", timeout=15)
                 if r.status_code == 200:
@@ -86,7 +97,7 @@ class PieraChainMenu(View):
         else:
             embed_fail = Embed(
                 title="❌ HASH RECHAZADO",
-                description="Tu hardware no ha encontrado una solución válida para este bloque.\n\n*Reintenta para seguir compitiendo.*",
+                description="Tu hardware no ha encontrado una solución válida. ¡Reintenta!",
                 color=0xE74C3C
             )
             await interaction.edit_original_response(embed=embed_fail, view=self)
@@ -96,21 +107,19 @@ class PieraChainMenu(View):
         try:
             r = requests.get(f"{API_BASE_URL}/balance/{self.address}", timeout=10)
             data = r.json()
-            
             embed_bal = Embed(
                 title="🏦 ESTADO DE CUENTA",
                 description=(
-                    f"**Dirección Vinculada:**\n`{self.address}`\n\n"
+                    f"**Dirección:** `{self.address}`\n\n"
                     f"**Saldo Disponible:**\n## {data['balance']} PIERAS 🪙"
                 ),
                 color=0x3498DB
             )
-            embed_bal.set_thumbnail(url=interaction.user.display_avatar.url)
             await interaction.response.send_message(embed=embed_bal, ephemeral=True)
         except:
-            await interaction.response.send_message("❌ **Error:** No se pudo obtener respuesta del banco central.", ephemeral=True)
+            await interaction.response.send_message("❌ Error al conectar con la blockchain.", ephemeral=True)
 
-# --- SISTEMA DEL BOT ---
+# --- CLASE DEL BOT ---
 class PieraChainBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -119,7 +128,7 @@ class PieraChainBot(discord.Client):
 
     async def setup_hook(self):
         await self.tree.sync()
-        print(f"🚀 [SISTEMA] Bot listo como {self.user}")
+        print(f"🚀 [SISTEMA] Bot {self.user} sincronizado.")
 
 bot = PieraChainBot()
 
@@ -132,10 +141,9 @@ async def id_command(interaction: discord.Interaction):
         addr = user_data["address"]
         embed = Embed(
             title="🔐 IDENTIDAD DETECTADA",
-            description=f"Ya tienes una cuenta vinculada a este perfil de Discord.\n\n**Tu Wallet:**\n`{addr}`",
+            description=f"Cuenta vinculada:\n\n`{addr}`",
             color=0x9B59B6
         )
-        embed.set_footer(text="Accede al terminal con /piera")
         await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
         await interaction.response.defer(ephemeral=True)
@@ -147,16 +155,14 @@ async def id_command(interaction: discord.Interaction):
             embed = Embed(
                 title="🧬 NUEVA IDENTIDAD GENERADA",
                 description=(
-                    "Se ha creado un nuevo par de llaves en la PieraChain.\n\n"
                     f"**Dirección Pública:**\n`{r_data['address']}`\n\n"
-                    f"**Llave Privada (¡SECRETA!):**\n|| {r_data['private_key']} ||"
+                    f"**Llave Privada:**\n|| {r_data['private_key']} ||"
                 ),
                 color=0x1ABC9C
             )
-            embed.set_footer(text="⚠️ No compartas tu llave privada con nadie.")
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error al generar wallet: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Error: `{e}`", ephemeral=True)
 
 @bot.tree.command(name="piera", description="Abrir el Terminal de Minería")
 async def piera_command(interaction: discord.Interaction, direccion: str = None):
@@ -165,12 +171,11 @@ async def piera_command(interaction: discord.Interaction, direccion: str = None)
     ahora = datetime.now()
 
     if not user_data:
-        return await interaction.response.send_message("❌ **Error:** Primero debes crear una identidad con `/id`.", ephemeral=True)
+        return await interaction.response.send_message("❌ Usa `/id` primero.", ephemeral=True)
 
-    addr_registrada = user_data["address"]
+    addr_reg = user_data["address"]
     es_valido = False
     
-    # Comprobar sesión (24h)
     if user_data.get("last_login"):
         try:
             last_login = datetime.fromisoformat(user_data["last_login"])
@@ -178,40 +183,19 @@ async def piera_command(interaction: discord.Interaction, direccion: str = None)
                 es_valido = True
         except: pass
 
-    # Validación por dirección
-    if direccion:
-        if direccion == addr_registrada:
-            update_user(u_id, addr_registrada, ahora.isoformat())
-            es_valido = True
-        else:
-            return await interaction.response.send_message("❌ **Error:** La dirección ingresada no coincide con tu ID.", ephemeral=True)
+    if direccion and direccion == addr_reg:
+        update_user(u_id, addr_reg, ahora.isoformat())
+        es_valido = True
 
     if es_valido:
         embed = Embed(
             title="🌌 TERMINAL PIERACHAIN",
-            description=(
-                f"Bienvenido de nuevo, **{interaction.user.name}**.\n"
-                f"Estado del Nodo: `🟢 Conectado` \n"
-                f"Wallet: `{addr_registrada[:10]}...{addr_registrada[-5:]}`\n\n"
-                "Selecciona una acción del menú inferior:"
-            ),
+            description=f"Usuario: **{interaction.user.name}**\nNodo: `🟢 Online`",
             color=0x00FFCC
         )
-        await interaction.response.send_message(embed=embed, view=PieraChainMenu(addr_registrada), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=PieraChainMenu(addr_reg), ephemeral=True)
     else:
-        embed_auth = Embed(
-            title="🔒 SESIÓN REQUERIDA",
-            description=(
-                "Tu sesión ha expirado o necesitas verificar tu identidad.\n\n"
-                "Para entrar, usa el comando con tu dirección:\n"
-                "`/piera direccion:TU_DIRECCION_AQUÍ`"
-            ),
-            color=0xFF4444
-        )
-        await interaction.response.send_message(embed=embed_auth, ephemeral=True)
+        await interaction.response.send_message("🔒 Sesión expirada. Usa `/piera direccion:TU_ADDRESS`.", ephemeral=True)
 
 if __name__ == "__main__":
-    if not TOKEN:
-        print("❌ Error: Falta el DISCORD_TOKEN en las variables de entorno.")
-    else:
-        bot.run(TOKEN)
+    bot.run(TOKEN)
