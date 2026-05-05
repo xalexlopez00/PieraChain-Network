@@ -41,7 +41,10 @@ except Exception as e:
 
 # --- FUNCIONES AUXILIARES ---
 def get_user(user_id):
-    return users_col.find_one({"user_id": str(user_id)})
+    try:
+        return users_col.find_one({"user_id": str(user_id)})
+    except:
+        return None
 
 def update_user(user_id, address, last_login=None):
     data = {"address": address}
@@ -57,13 +60,15 @@ class PieraChainMenu(View):
 
     @discord.ui.button(label="⛏️ INICIAR MINADO", style=ButtonStyle.success, custom_id="mine_btn")
     async def mine_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # CORREGIDO: Eliminado el salto de línea que rompía el string
         embed_mining = Embed(
             title="⚡ CONECTANDO AL NODO...",
-            description="```fix\nStatus: Ejecutando algoritmos PoW\nHashrate: 45.2 MH/s\n
-```\nBuscando un nonce válido...",
+            description="```fix\nStatus: Ejecutando algoritmos PoW\nHashrate: 45.2 MH/s```\nBuscando un nonce válido...",
             color=0xF1C40F
         )
         await interaction.response.edit_message(embed=embed_mining, view=None)
+        
+        # Simulación de trabajo de minería
         await asyncio.sleep(random.randint(4, 7)) 
         
         if random.random() < 0.25:
@@ -78,11 +83,16 @@ class PieraChainMenu(View):
                         color=0x2ECC71
                     )
                     await interaction.edit_original_response(embed=embed_win, view=self)
-                else: raise Exception("Error en el nodo")
+                else: 
+                    raise Exception("Error en la respuesta del nodo")
             except Exception as e:
-                await interaction.edit_original_response(content=f"⚠️ Error: `{e}`", embed=None, view=self)
+                await interaction.edit_original_response(content=f"⚠️ Error de conexión: `{e}`", embed=None, view=self)
         else:
-            embed_fail = Embed(title="❌ HASH RECHAZADO", description="No se encontró solución. ¡Reintenta!", color=0xE74C3C)
+            embed_fail = Embed(
+                title="❌ HASH RECHAZADO", 
+                description="Tu hardware no encontró una solución válida esta vez. ¡Reintenta!", 
+                color=0xE74C3C
+            )
             await interaction.edit_original_response(embed=embed_fail, view=self)
 
     @discord.ui.button(label="💰 CARTERA", style=ButtonStyle.secondary, custom_id="bal_btn")
@@ -90,10 +100,14 @@ class PieraChainMenu(View):
         try:
             r = requests.get(f"{API_BASE_URL}/balance/{self.address}", timeout=10)
             data = r.json()
-            embed_bal = Embed(title="🏦 SALDO", description=f"**Dirección:** `{self.address}`\n## {data['balance']} PIERAS 🪙", color=0x3498DB)
+            embed_bal = Embed(
+                title="🏦 ESTADO DE CUENTA", 
+                description=f"**Dirección:** `{self.address}`\n## {data['balance']} PIERAS 🪙", 
+                color=0x3498DB
+            )
             await interaction.response.send_message(embed=embed_bal, ephemeral=True)
         except:
-            await interaction.response.send_message("❌ Error de conexión.", ephemeral=True)
+            await interaction.response.send_message("❌ Error: No se pudo obtener el saldo del nodo.", ephemeral=True)
 
 # --- BOT ---
 class PieraChainBot(discord.Client):
@@ -101,8 +115,10 @@ class PieraChainBot(discord.Client):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
+
     async def setup_hook(self):
         await self.tree.sync()
+        print(f"🚀 Slash commands sincronizados.")
         print(f"🚀 Bot listo: {self.user}")
 
 bot = PieraChainBot()
@@ -111,28 +127,43 @@ bot = PieraChainBot()
 async def id_command(interaction: discord.Interaction):
     user_data = get_user(interaction.user.id)
     if user_data:
-        await interaction.response.send_message(f"✅ Tu wallet: `{user_data['address']}`", ephemeral=True)
+        await interaction.response.send_message(f"✅ Tu wallet ya está vinculada: `{user_data['address']}`", ephemeral=True)
     else:
         await interaction.response.defer(ephemeral=True)
         try:
+            # Llamada a la API para generar llaves
             r = requests.get(f"{API_BASE_URL}/wallet/generate", timeout=10).json()
             update_user(interaction.user.id, r["address"])
-            embed = Embed(title="🧬 WALLET GENERADA", description=f"**Dirección:** `{r['address']}`\n**Privada:** || {r['private_key']} ||", color=0x1ABC9C)
+            
+            embed = Embed(
+                title="🧬 WALLET GENERADA", 
+                description=f"**Dirección Pública:** `{r['address']}`\n**Llave Privada:** || {r['private_key']} ||\n\n*Guarda tu llave privada, es secreta.*", 
+                color=0x1ABC9C
+            )
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Error al generar wallet: `{e}`", ephemeral=True)
 
 @bot.tree.command(name="piera", description="Panel de minería")
 async def piera_command(interaction: discord.Interaction, direccion: str = None):
     u_data = get_user(interaction.user.id)
-    if not u_data: return await interaction.response.send_message("❌ Usa `/id` primero.", ephemeral=True)
+    if not u_data: 
+        return await interaction.response.send_message("❌ No tienes una cuenta. Usa `/id` primero.", ephemeral=True)
     
     addr = u_data["address"]
+    # Si el usuario provee una dirección, verificamos que sea la suya
     if direccion and direccion != addr:
-        return await interaction.response.send_message("❌ Dirección incorrecta.", ephemeral=True)
+        return await interaction.response.send_message("❌ La dirección proporcionada no coincide con tu registro.", ephemeral=True)
 
-    embed = Embed(title="🌌 TERMINAL", description=f"Bienvenido, **{interaction.user.name}**\nNodo: `🟢 Conectado`", color=0x00FFCC)
+    embed = Embed(
+        title="🌌 TERMINAL PIERACHAIN", 
+        description=f"Bienvenido, **{interaction.user.name}**\nNodo: `🟢 Conectado`", 
+        color=0x00FFCC
+    )
     await interaction.response.send_message(embed=embed, view=PieraChainMenu(addr), ephemeral=True)
 
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    if not TOKEN:
+        print("❌ ERROR: No se encontró el DISCORD_TOKEN en las variables de entorno.")
+    else:
+        bot.run(TOKEN)
