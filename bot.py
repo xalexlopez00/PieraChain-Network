@@ -2,19 +2,18 @@ import discord
 from discord import app_commands, Embed, ButtonStyle
 from discord.ui import View, button
 import asyncio
-import random
 import requests
 import os
 import pymongo
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # --- CONFIGURACIÓN ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 API_BASE_URL = os.getenv("API_URL", "").strip("/")
 MONGO_URI = os.getenv("MONGO_URI", "")
 
-# --- LIMPIEZA DE URI (Seguridad extra) ---
+# --- LIMPIEZA DE URI PARA EVITAR ERRORES ---
 def get_clean_uri(uri):
     if not uri or "://" not in uri: return uri
     try:
@@ -27,31 +26,23 @@ def get_clean_uri(uri):
     except: pass
     return uri
 
-# Intentamos conectar con un tiempo de espera corto para no congelar el bot
-CLEAN_MONGO_URI = get_clean_uri(MONGO_URI)
-client = pymongo.MongoClient(CLEAN_MONGO_URI, serverSelectionTimeoutMS=2000)
+# Conexión con tiempo de espera corto (2 segundos) para no bloquear el bot
+client = pymongo.MongoClient(get_clean_uri(MONGO_URI), serverSelectionTimeoutMS=2000)
 db_mongo = client["pieracoin_db"]
 users_col = db_mongo["users"]
 
-# --- FUNCIONES DE BASE DE DATOS CON TIMEOUT ---
+# --- FUNCIONES DE BASE DE DATOS ---
 def get_user(user_id):
     try:
         return users_col.find_one({"user_id": str(user_id)})
-    except Exception as e:
-        print(f"⚠️ Error DB (get_user): {e}")
-        return None
+    except: return None
 
 def update_user(user_id, address):
     try:
-        users_col.update_one(
-            {"user_id": str(user_id)}, 
-            {"$set": {"address": address, "last_active": datetime.now()}}, 
-            upsert=True
-        )
-    except Exception as e:
-        print(f"⚠️ Error DB (update_user): {e}")
+        users_col.update_one({"user_id": str(user_id)}, {"$set": {"address": address}}, upsert=True)
+    except: pass
 
-# --- INTERFAZ DE MINERÍA ---
+# --- MENÚ DE BOTONES ---
 class PieraChainMenu(View):
     def __init__(self, address):
         super().__init__(timeout=None)
@@ -59,22 +50,30 @@ class PieraChainMenu(View):
 
     @discord.ui.button(label="⛏️ MINAR", style=ButtonStyle.success, custom_id="mine_btn")
     async def mine_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="⚡ Minando...", embed=None, view=None)
-        
-        await asyncio.sleep(2) # Simulación breve
+        # 1. Avisamos que estamos trabajando
+        await interaction.response.edit_message(content="⛏️ Procesando minería...", embed=None, view=None)
         
         try:
+            # 2. Petición al nodo
             r = requests.post(f"{API_BASE_URL}/mine?address={self.address}", timeout=10)
             if r.status_code == 200:
                 data = r.json()
-                emb = Embed(title="✨ ¡ÉXITO!", description=f"Bloque minado.\nNuevo Saldo: `{data.get('new_balance')} PIERAS`", color=0x2ECC71)
+                emb = Embed(title="✨ BLOQUE MINADO", description=f"Nuevo Saldo: `{data.get('new_balance')} PIERAS`", color=0x2ECC71)
                 await interaction.edit_original_response(content=None, embed=emb, view=self)
             else:
-                await interaction.edit_original_response(content="❌ El nodo rechazó la petición.", view=self)
+                await interaction.edit_original_response(content="❌ El nodo no respondió correctamente.", view=self)
         except Exception as e:
-            await interaction.edit_original_response(content=f"⚠️ Error de red: `{e}`", view=self)
+            await interaction.edit_original_response(content=f"⚠️ Error de conexión: `{e}`", view=self)
 
-# --- BOT SETUP ---
+    @discord.ui.button(label="💰 SALDO", style=ButtonStyle.secondary, custom_id="bal_btn")
+    async def balance_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            r = requests.get(f"{API_BASE_URL}/balance/{self.address}", timeout=5).json()
+            await interaction.response.send_message(f"🏦 Tu saldo actual es: `{r['balance']} PIERAS`", ephemeral=True)
+        except:
+            await interaction.response.send_message("❌ No se pudo conectar con la blockchain.", ephemeral=True)
+
+# --- CONFIGURACIÓN DEL BOT ---
 class PieraChainBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -86,34 +85,32 @@ class PieraChainBot(discord.Client):
 
 bot = PieraChainBot()
 
-@bot.tree.command(name="id", description="Crea o mira tu cuenta")
+@bot.tree.command(name="id", description="Vincula tu cuenta o crea una nueva")
 async def id_command(interaction: discord.Interaction):
-    # CRITICAL: El defer evita el error de "La aplicación no respondió"
+    # CRITICO: Evita que Discord de error de "No respondió"
     await interaction.response.defer(ephemeral=True)
     
-    u_id = interaction.user.id
-    user_data = get_user(u_id)
-    
+    user_data = get_user(interaction.user.id)
     if user_data:
-        await interaction.followup.send(f"✅ Tu wallet: `{user_data['address']}`")
+        await interaction.followup.send(f"✅ Ya tienes una cuenta: `{user_data['address']}`")
     else:
         try:
             r = requests.get(f"{API_BASE_URL}/wallet/generate", timeout=10).json()
-            update_user(u_id, r["address"])
-            emb = Embed(title="🧬 WALLET GENERADA", description=f"**Dirección:** `{r['address']}`\n**Privada:** ||{r['private_key']}||", color=0x1ABC9C)
+            update_user(interaction.user.id, r["address"])
+            emb = Embed(title="🧬 WALLET CREADA", description=f"Dirección: `{r['address']}`\nPrivada: ||{r['private_key']}||", color=0x1ABC9C)
             await interaction.followup.send(embed=emb)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Error al conectar con el nodo: `{e}`")
+        except:
+            await interaction.followup.send("❌ Error al conectar con el servidor de la blockchain.")
 
-@bot.tree.command(name="piera", description="Panel de control")
+@bot.tree.command(name="piera", description="Abre el terminal de minería")
 async def piera_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
     u_data = get_user(interaction.user.id)
     if not u_data:
-        return await interaction.followup.send("❌ No tienes cuenta. Usa `/id`.")
+        return await interaction.followup.send("❌ Usa primero `/id` para crear tu cuenta.")
 
-    emb = Embed(title="🌌 TERMINAL", description=f"Wallet: `{u_data['address']}`", color=0x00FFCC)
+    emb = Embed(title="🌌 TERMINAL PIERACHAIN", description=f"Conectado como: `{u_data['address']}`", color=0x00FFCC)
     await interaction.followup.send(embed=emb, view=PieraChainMenu(u_data["address"]))
 
 if __name__ == "__main__":
