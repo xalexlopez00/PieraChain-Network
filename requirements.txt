@@ -1,6 +1,7 @@
-﻿fastapi
+fastapi
 uvicorn
 cryptography
 pydantic
 requests
 python-dotenv
+discord.py
