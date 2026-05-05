@@ -1,27 +1,41 @@
 from fastapi import FastAPI
 import pymongo
 import os
-import urllib.parse # <--- Añadido para procesar la URL
+import urllib.parse
 from core.blockchain import Blockchain
 from core.wallet import Wallet
 
 app = FastAPI(title="PieraChain API", description="Nodo Blockchain para Render")
 
-# --- CONEXIÓN A MONGODB CON LIMPIEZA DE URI ---
-MONGO_URI = os.getenv("MONGO_URI")
+# --- LÓGICA DE CONEXIÓN ROBUSTA ---
+MONGO_URI = os.getenv("MONGO_URI", "")
 
-# Esta lógica separa la contraseña, la limpia y vuelve a montar la URL
-if MONGO_URI and "@" in MONGO_URI:
-    prefix, rest = MONGO_URI.split("://", 1)
-    user_pass, host = rest.split("@", 1)
-    if ":" in user_pass:
-        user, password = user_pass.split(":", 1)
-        # Codifica caracteres especiales en el usuario y password
-        user = urllib.parse.quote_plus(user)
-        password = urllib.parse.quote_plus(password)
-        MONGO_URI = f"{prefix}://{user}:{password}@{host}"
+def get_clean_uri(uri):
+    if not uri:
+        return uri
+    try:
+        # Si la URI ya está codificada o es local, no hacemos nada complejo
+        if "mongodb+srv://" not in uri and "mongodb://" not in uri:
+            return uri
+        
+        # Separamos el protocolo (mongodb+srv://) del resto
+        protocol, rest = uri.split("://", 1)
+        # Separamos credenciales del host
+        if "@" in rest:
+            creds, host = rest.rsplit("@", 1)
+            # Separamos usuario de contraseña
+            if ":" in creds:
+                user, password = creds.split(":", 1)
+                user = urllib.parse.quote_plus(user)
+                password = urllib.parse.quote_plus(password)
+                return f"{protocol}://{user}:{password}@{host}"
+    except Exception:
+        pass
+    return uri
 
-client = pymongo.MongoClient(MONGO_URI)
+# Aplicamos la limpieza
+CLEAN_MONGO_URI = get_clean_uri(MONGO_URI)
+client = pymongo.MongoClient(CLEAN_MONGO_URI)
 db_mongo = client["pieracoin_db"]
 balances_col = db_mongo["balances"]
 
